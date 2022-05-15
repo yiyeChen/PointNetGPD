@@ -210,3 +210,7 @@ tags
 *.snm
 *.toc
 *.synctex.gz
+
+
+#### Data
+data/PointNetGPD_grasps_dataset
