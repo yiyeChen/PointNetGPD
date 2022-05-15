@@ -22,19 +22,35 @@ import sys
 from os import path
 from scipy.stats import mode
 import multiprocessing as mp
-try:
-    from gpd_grasp_msgs.msg import GraspConfig
-    from gpd_grasp_msgs.msg import GraspConfigList
-except ImportError:
-    print("Please install grasp msgs from https://github.com/TAMS-Group/gpd_grasp_msgs in your ROS workspace")
-    exit()
+# try:
+#     from gpd_grasp_msgs.msg import GraspConfig
+#     from gpd_grasp_msgs.msg import GraspConfigList
+# except ImportError:
+#     print("Please install grasp msgs from https://github.com/TAMS-Group/gpd_grasp_msgs in your ROS workspace")
+#     exit()
 
 sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath("__file__")))))
 sys.path.append(os.environ['PointNetGPD_FOLDER'] + "/PointNetGPD")
-from main_test import test_network, model, args
 import logging
 logging.getLogger().setLevel(logging.FATAL)
-# global config:
+
+
+#### args from the main_test file
+import argparse
+parser = argparse.ArgumentParser(description="pointnetGPD")
+parser.add_argument("--cuda", action="store_true", default=False)
+parser.add_argument("--gpu", type=int, default=0)
+parser.add_argument("--load-model", type=str,
+                    default="../data/pointnetgpd_3class.model")
+parser.add_argument("--show_final_grasp", action="store_true", default=False)
+parser.add_argument("--tray_grasp", action="store_true", default=False)
+parser.add_argument("--using_mp", action="store_true", default=False)
+parser.add_argument("--model_type", type=str)
+
+args = parser.parse_args()
+
+
+##### global config:
 yaml_config = YamlConfig(os.environ['PointNetGPD_FOLDER'] + "/dex-net/test/config.yaml")
 gripper_name = 'robotiq_85'
 gripper = RobotGripper.load(gripper_name, os.environ['PointNetGPD_FOLDER'] + "/dex-net/data/grippers")
@@ -510,54 +526,4 @@ if __name__ == '__main__':
         ## end of grasp detection
         ########################################################################################
 
-        # get sorted ind by the score values
-        sorted_value_ind = list(index for index, item in sorted(enumerate(real_score_value),
-                                                                key=lambda item: item[1],
-                                                                reverse=True))
-        # sort grasps using the ind
-        sorted_real_good_grasp = [real_good_grasp[i] for i in sorted_value_ind]
-        real_good_grasp = sorted_real_good_grasp
-        # get the sorted score value, from high to low
-        real_score_value = sorted(real_score_value, reverse=True)
-
-        marker_array = MarkerArray()
-        marker_array_single = MarkerArray()
-        grasp_msg_list = GraspConfigList()
-
-        for i in range(len(real_good_grasp)):
-            grasp_msg = get_grasp_msg(real_good_grasp[i], real_score_value[i])
-            grasp_msg_list.grasps.append(grasp_msg)
-        for i in range(len(real_good_grasp)):
-            show_grasp_marker(marker_array, real_good_grasp[i], gripper, (0, 1, 0), marker_life_time)
-
-        if show_bad_grasp:
-            for i in range(len(real_bad_grasp)):
-                show_grasp_marker(marker_array, real_bad_grasp[i], gripper, (1, 0, 0), marker_life_time)
-
-        id_ = 0
-        for m in marker_array.markers:
-            m.id = id_
-            id_ += 1
-
-        grasp_msg_list.header.stamp = rospy.Time.now()
-        grasp_msg_list.header.frame_id = "/table_top"
-
-        if len(real_good_grasp) != 0:
-            i = 0
-            single_grasp_list_pub = GraspConfigList()
-            single_grasp_list_pub.header.stamp = rospy.Time.now()
-            single_grasp_list_pub.header.frame_id = "/table_top"
-            grasp_msg = get_grasp_msg(real_good_grasp[i], real_score_value[i])
-            single_grasp_list_pub.grasps.append(grasp_msg)
-            show_grasp_marker(marker_array_single, real_good_grasp[i], gripper, (1, 0, 0), marker_life_time+20)
-
-            for m in marker_array_single.markers:
-                m.id = id_
-                id_ += 1
-            pub1.publish(marker_array)
-            rospy.sleep(4)
-            pub2.publish(single_grasp_list_pub)
-            pub1.publish(marker_array_single)
-        # pub2.publish(grasp_msg_list)
-        rospy.loginfo(" Publishing grasp pose to rviz using marker array and good grasp pose")
-        rate.sleep()
+      
