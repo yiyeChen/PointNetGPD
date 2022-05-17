@@ -1398,6 +1398,7 @@ class GpgGraspSamplerPcl(GraspSampler):
     """
 
     def sample_grasps(self, point_cloud,points_for_sample, all_normal, num_grasps=20, max_num_samples=200, show_final_grasp=False,
+                    enable_ros = True,
                       **kwargs):
         """
         Returns a list of candidate grasps for graspable object using uniform point pairs from the SDF
@@ -1450,7 +1451,7 @@ class GpgGraspSamplerPcl(GraspSampler):
             # end of modification 5
 
             # for ros, we neded to judge if the robot is at HOME
-            if ROS_ENABLED:
+            if ROS_ENABLED and enable_ros:
                 if rospy.get_param("/robot_at_home") == "false":
                     robot_at_home = False
                 else:

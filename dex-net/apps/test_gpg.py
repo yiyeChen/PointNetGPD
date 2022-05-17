@@ -5,14 +5,19 @@
 # Description:
 # Date       : 05/08/2018 6:04 PM
 # File Name  : kinect2grasp.py
+
 import rospy
 from sensor_msgs.msg import PointCloud2
+import std_msgs.msg
+import sensor_msgs.point_cloud2 as pcl2
+
 from visualization_msgs.msg import MarkerArray
 from visualization_msgs.msg import Marker
 import numpy as np
 import pointclouds
 import voxelgrid
 import pcl
+import pcl.pcl_visualization as viewer
 from autolab_core import YamlConfig
 from dexnet.grasping import RobotGripper
 from dexnet.grasping import GpgGraspSamplerPcl
@@ -22,12 +27,14 @@ import sys
 from os import path
 from scipy.stats import mode
 import multiprocessing as mp
-# try:
-#     from gpd_grasp_msgs.msg import GraspConfig
-#     from gpd_grasp_msgs.msg import GraspConfigList
-# except ImportError:
-#     print("Please install grasp msgs from https://github.com/TAMS-Group/gpd_grasp_msgs in your ROS workspace")
-#     exit()
+try:
+    from gpd_grasp_msgs.msg import GraspConfig
+    from gpd_grasp_msgs.msg import GraspConfigList
+except ImportError:
+    print("Please install grasp msgs from https://github.com/TAMS-Group/gpd_grasp_msgs in your ROS workspace")
+    exit()
+
+
 
 sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath("__file__")))))
 sys.path.append(os.environ['PointNetGPD_FOLDER'] + "/PointNetGPD")
@@ -44,7 +51,7 @@ parser.add_argument("--load-model", type=str,
                     default="../data/pointnetgpd_3class.model")
 parser.add_argument("--show_final_grasp", action="store_true", default=False)
 parser.add_argument("--tray_grasp", action="store_true", default=False)
-parser.add_argument("--using_mp", action="store_true", default=False)
+parser.add_argument("--using_mp", action="store_true", default=True)
 parser.add_argument("--model_type", type=str)
 
 args = parser.parse_args()
@@ -124,27 +131,43 @@ def get_voxel_fun(points_, n):
     return points_voxel_
 
 
-def cal_grasp(msg, cam_pos_):
-    points_ = pointclouds.pointcloud2_to_xyz_array(msg)
+def cal_grasp(points_, cam_pos_):
+    """Calculate the grasp
+
+    Args:
+        msg (PointCloud2 message):  - MOOT
+        points (array, (N,3)).      The point cloud in the tabletop frame
+        cam_pos_ (_type_):  NOT SURE. Seems like the table-to-camera translation
+
+    Returns:
+        grasps_together_ (list):    Each item describes a grasp. 
+                                    The items are a list of 3-dim array of the length 5, which stores:
+                                        0: grasp bottom center
+                                        1: approach direction
+                                        2: binormal direction
+                                        3: Minor_pc: minor principle curvature at the grasp point (contact point)
+                                        4: grasp bottom center modified? (from the get_grasp_msg function) 
+                                    NOTE: the 1, 2, 3 are perpendicular. They fully described the rotation of the grasp
+        points ():
+        surface_norm (array, (N, 3)): 
+    """
+    #### NOTE: The original code below takes in a PointCloud2 message and convert to the Nx2 matrix.
+    #### here I directly change the input to a Nx3 matrix point cloud
+    # points_ = pointclouds.pointcloud2_to_xyz_array(msg)
     points_ = points_.astype(np.float32)
-    remove_white = False
-    if remove_white:
-        points_ = remove_white_pixel(msg, points_, vis=True)
+
     # begin voxel points
     n = n_voxel  # parameter related to voxel method
     # gpg improvements, highlights: flexible n parameter for voxelizing.
-    points_voxel_ = get_voxel_fun(points_, n)
+    points_voxel_ = get_voxel_fun(points_, n)       # the voxel centers
     if len(points_) < 2000:  # should be a parameter
         while len(points_voxel_) < len(points_)-15:
             points_voxel_ = get_voxel_fun(points_, n)
             n = n + 100
-            rospy.loginfo("the voxel has {} points, we want get {} points".format(len(points_voxel_), len(points_)))
+            print("the voxel has {} points, we want get {} points".format(len(points_voxel_), len(points_)))
 
-    rospy.loginfo("the voxel has {} points, we want get {} points".format(len(points_voxel_), len(points_)))
+    print("the voxel has {} points, we want get {} points".format(len(points_voxel_), len(points_)))
     points_ = points_voxel_
-    remove_points = False
-    if remove_points:
-        points_ = remove_table_points(points_, vis=True)
     point_cloud = pcl.PointCloud(points_)
     norm = point_cloud.make_NormalEstimation()
     norm.set_KSearch(30)  # critical parameter when calculating the norms
@@ -158,25 +181,29 @@ def cal_grasp(msg, cam_pos_):
     wrong_dir_norm = np.where(angel > np.pi * 0.5)[0]
     tmp = np.ones([len(angel), 3])
     tmp[wrong_dir_norm, :] = -1
-    surface_normal = surface_normal * tmp
+    surface_normal = surface_normal * tmp   # (N, 3)
     select_point_above_table = 0.010
     #  modify of gpg: make it as a parameter. avoid select points near the table.
-    points_for_sample = points_[np.where(points_[:, 2] > select_point_above_table)[0]]
+    points_for_sample = points_[np.where(points_[:, 2] > select_point_above_table)[0]]  # (N_candidate, 3)
     if len(points_for_sample) == 0:
-        rospy.loginfo("Can not seltect point, maybe the point cloud is too low?")
+        print("Can not seltect point, maybe the point cloud is too low?")
         return [], points_, surface_normal
     yaml_config['metrics']['robust_ferrari_canny']['friction_coef'] = value_fc
+
+    enable_ros = False
     if not using_mp:
-        rospy.loginfo("Begin cal grasps using single thread, slow!")
+        print("Begin cal grasps using single thread, slow!")
         grasps_together_ = ags.sample_grasps(point_cloud, points_for_sample, surface_normal, num_grasps,
-                                             max_num_samples=max_num_samples, show_final_grasp=show_final_grasp)
+                                             max_num_samples=max_num_samples, show_final_grasp=show_final_grasp, 
+                                             enable_ros=enable_ros)
     else:
         # begin parallel grasp:
-        rospy.loginfo("Begin cal grasps using parallel!")
+        print("Begin cal grasps using parallel!")
 
         def grasp_task(num_grasps_, ags_, queue_):
             ret = ags_.sample_grasps(point_cloud, points_for_sample, surface_normal, num_grasps_,
-                                     max_num_samples=max_num_samples, show_final_grasp=show_final_grasp)
+                                     max_num_samples=max_num_samples, show_final_grasp=show_final_grasp, 
+                                     enable_ros = enable_ros)
             queue_.put(ret)
 
         queue = mp.Queue()
@@ -187,8 +214,8 @@ def cal_grasp(msg, cam_pos_):
         grasps_together_ = []
         for i in range(num_workers):
             grasps_together_ = grasps_together_ + queue.get()
-        rospy.loginfo("Finish mp processing!")
-    rospy.loginfo("Grasp sampler finish, generated {} grasps.".format(len(grasps_together_)))
+        print("Finish mp processing!")
+    print("Grasp sampler finish, generated {} grasps.".format(len(grasps_together_)))
     return grasps_together_, points_, surface_normal
 
 
@@ -264,6 +291,10 @@ def collect_pc(grasp_, pc):
     binormal = grasp_[:, 2]
     minor_pc = grasp_[:, 3]
 
+    print(np.diagonal(approach_normal @ minor_pc.T))    # all ~zero, they are perpendicular
+    print(np.diagonal(approach_normal @ binormal.T))    # all ~zero, they are perpendicular
+    print(np.diagonal(binormal @ minor_pc.T))           # all ~zero, they are perpendicular
+
     in_ind_ = []
     in_ind_points_ = []
     p = ags.get_hand_points(np.array([0, 0, 0]), np.array([1, 0, 0]), np.array([0, 1, 0]))
@@ -277,7 +308,7 @@ def collect_pc(grasp_, pc):
 
 def show_marker(marker_array_, pos_, ori_, scale_, color_, lifetime_):
     marker_ = Marker()
-    marker_.header.frame_id = "/table_top"
+    marker_.header.frame_id = "table_top"
     # marker_.header.stamp = rospy.Time.now()
     marker_.type = marker_.CUBE
     marker_.action = marker_.ADD
@@ -414,116 +445,203 @@ if __name__ == '__main__':
     binormal = grasp_[2]
     """
 
+
+
+
     rospy.init_node('grasp_tf_broadcaster', anonymous=True)
     pub1 = rospy.Publisher('gripper_vis', MarkerArray, queue_size=1)
     pub2 = rospy.Publisher('/detect_grasps/clustered_grasps', GraspConfigList, queue_size=1)
+    pub3 = rospy.Publisher("/obj_pc", PointCloud2)
     rate = rospy.Rate(10)
     rospy.set_param("/robot_at_home", "true")  # only use when in simulation test.
     rospy.loginfo("getting transform from kinect2 to table top")
-    cam_pos = None
-    if cam_pos is None:
-        print("Please change the above line to the position between /table_top and /kinect2_ir_optical_frame")
-        print("In ROS, you can run: rosrun tf tf_echo /table_top /kinect2_ir_optical_frame")
-        exit()
-    while not rospy.is_shutdown():
+    cam_pos = np.array([0, 0, 0])
+    # if cam_pos is None:
+    #     print("Please change the above line to the position between /table_top and /kinect2_ir_optical_frame")
+    #     print("In ROS, you can run: rosrun tf tf_echo /table_top /kinect2_ir_optical_frame")
+    #     exit()
+
+    # rospy.loginfo("rospy is waiting for message: /table_top_points")
+    # kinect_data = rospy.wait_for_message("/table_top_points", PointCloud2)
+    real_good_grasp = []
+    real_bad_grasp = []
+    real_score_value = []
+
+    repeat = 1  # speed up this try 10 time is too time consuming
+
+    # read the sample data and visualize using pcl
+    pc = np.load(os.environ['PointNetGPD_FOLDER'] + "/data/pc.npy")  #(N, 3)
+    cloud = pcl.PointCloud(pc)
+    header = std_msgs.msg.Header()
+    header.stamp = rospy.Time.now()
+    header.frame_id = 'table_top'
+    #create pcl from points
+    obj_pc = pcl2.create_cloud_xyz32(header, pc)    
+
+
+    #### The pc visualization following the tutorial:
+    #### https://blog.csdn.net/weixin_37804469/article/details/106936098?utm_medium=distribute.pc_relevant.none-task-blog-2~default~baidujs_title~default-0-106936098-blog-105339472.pc_relevant_paycolumn_v3&spm=1001.2101.3001.4242.1&utm_relevant_index=1 
+    # vs=pcl.pcl_visualization.PCLVisualizering
+    # vss0=pcl.pcl_visualization.PCLVisualizering() 
+    # # color setting
+    # obj_color = pcl.pcl_visualization.PointCloudColorHandleringCustom(cloud, 0, 0, 255)
+    # grasp_color = pcl.pcl_visualization.PointCloudColorHandleringCustom(cloud, 0, 255, 0)
+
+    # # add the point cloud with label and the point size
+    # vs.AddPointCloud_ColorHandler(vss0,cloud, obj_color, id=b'obj',viewport=0)
+    # vss0.SetPointCloudRenderingProperties(viewer.PCLVISUALIZER_POINT_SIZE, 5, b'obj')
+
+
+
+    ########################################################################################
+    ## begin of grasp detection
+    ########################################################################################
+    # Uncomment to calculate the grasp
+    # real_grasp, points, normals_cal = cal_grasp(pc, cam_pos)
+    # Uncomment to load the grasps
+    points = np.load("./generated_grasps/points.npy")
+    real_grasp = np.load("./generated_grasps/real_grasp.npy")
+    normals_cal = np.load("./generated_grasps/cal_norm.npy")
+
+    # CYY: Try to visualize the grasps
+    # grasp = real_grasp[0]
+    # grasp_pc = ags.get_hand_points(grasp[0], grasp[1], grasp[2])
+    # grasp_pc = pcl.PointCloud(grasp_pc.astype(np.float32))
+    # vs.AddPointCloud_ColorHandler(vss0,grasp_pc, grasp_color, id=b'grasp',viewport=0)# 添加点云及标签
+    # vss0.SetPointCloudRenderingProperties(viewer.PCLVISUALIZER_POINT_SIZE, 5, b'grasp')
+    # # visual.ShowMonochromeCloud(pcl.PointCloud(grasp_pc.astype(np.float32)))
+    # v = True
+    # while not vs.WasStopped(vss0):
+    #     vs.Spin(vss0)    
+
+    if tray_grasp:
+        real_grasp = remove_grasp_outside_tray(real_grasp, points)
+
+    check_grasp_points_num = True  # evaluate the number of points in a grasp
+    check_hand_points_fun(real_grasp) if check_grasp_points_num else 0
+
+    in_ind, in_ind_points = collect_pc(real_grasp, points)
+    if save_grasp_related_file:
+        np.save("./generated_grasps/points.npy", points)
+        np.save("./generated_grasps/in_ind.npy", in_ind)
+        np.save("./generated_grasps/real_grasp.npy", real_grasp)
+        np.save("./generated_grasps/cal_norm.npy", normals_cal)
+    score = []  # should be 0 or 1
+    score_value = []  # should be float [0, 1]
+    ind_good_grasp = []
+    ind_bad_grasp = []
+    rospy.loginfo("Begin send grasp into pointnet, cal grasp score")
+    for ii in range(len(in_ind_points)):
         if rospy.get_param("/robot_at_home") == "false":
             robot_at_home = False
         else:
             robot_at_home = True
         if not robot_at_home:
-            rospy.loginfo("Robot is moving, waiting the robot go home.")
-            continue
-        else:
-            rospy.loginfo("Robot is at home, safely catching point cloud data.")
-            if single_obj_testing:
-                input("Pleas put object on table and press any number to continue!")
-        rospy.loginfo("rospy is waiting for message: /table_top_points")
-        kinect_data = rospy.wait_for_message("/table_top_points", PointCloud2)
-        real_good_grasp = []
-        real_bad_grasp = []
-        real_score_value = []
-
-        repeat = 1  # speed up this try 10 time is too time consuming
-
-        ########################################################################################
-        ## begin of grasp detection
-        ########################################################################################
-        # if there is no point cloud on table, waiting for point cloud.
-        if kinect_data.data == '':
-            rospy.loginfo("There is no points on the table, waiting...")
-            continue
-        real_grasp, points, normals_cal = cal_grasp(kinect_data, cam_pos)
-        if tray_grasp:
-            real_grasp = remove_grasp_outside_tray(real_grasp, points)
-
-        check_grasp_points_num = True  # evaluate the number of points in a grasp
-        check_hand_points_fun(real_grasp) if check_grasp_points_num else 0
-
-        in_ind, in_ind_points = collect_pc(real_grasp, points)
-        if save_grasp_related_file:
-            np.save("./generated_grasps/points.npy", points)
-            np.save("./generated_grasps/in_ind.npy", in_ind)
-            np.save("./generated_grasps/real_grasp.npy", real_grasp)
-            np.save("./generated_grasps/cal_norm.npy", normals_cal)
-        score = []  # should be 0 or 1
-        score_value = []  # should be float [0, 1]
-        ind_good_grasp = []
-        ind_bad_grasp = []
-        rospy.loginfo("Begin send grasp into pointnet, cal grasp score")
-        for ii in range(len(in_ind_points)):
-            if rospy.get_param("/robot_at_home") == "false":
-                robot_at_home = False
-            else:
-                robot_at_home = True
-            if not robot_at_home:
-                rospy.loginfo("robot is not at home, stop calculating the grasp score")
-                break
-            if in_ind_points[ii].shape[0] < minimal_points_send_to_point_net:
-                rospy.loginfo("Mark as bad grasp! Only {} points, should be at least {} points.".format(
-                              in_ind_points[ii].shape[0], minimal_points_send_to_point_net))
-                score.append(0)
-                score_value.append(0.0)
-                if show_bad_grasp:
-                    ind_bad_grasp.append(ii)
-            else:
-                predict = []
-                grasp_score = []
-                for _ in range(repeat):
-                    if len(in_ind_points[ii]) >= input_points_num:
-                        points_modify = in_ind_points[ii][np.random.choice(len(in_ind_points[ii]),
-                                                                           input_points_num, replace=False)]
-                    else:
-                        points_modify = in_ind_points[ii][np.random.choice(len(in_ind_points[ii]),
-                                                                           input_points_num, replace=True)]
-                    if_good_grasp, grasp_score_tmp = test_network(model.eval(), points_modify)
-                    predict.append(if_good_grasp.item())
-                    grasp_score.append(grasp_score_tmp)
-
-                predict_vote = mode(predict)[0][0]  # vote from all the "repeat" results.
-                grasp_score = np.array(grasp_score)
-                if args.model_type == "3class":  # the best in 3 class classification is the last column, third column
-                    which_one_is_best = 2  # should set as 2
-                else:  # for two class classification best is the second column (also the last column)
-                    which_one_is_best = 1  # should set as 1
-                score_vote = np.mean(grasp_score[np.where(predict == predict_vote)][:, 0, which_one_is_best])
-                score.append(predict_vote)
-                score_value.append(score_vote)
-
-                if score[ii] == which_one_is_best:
-                    ind_good_grasp.append(ii)
-                else:
-                    if show_bad_grasp:
-                        ind_bad_grasp.append(ii)
-        print("Got {} good grasps, and {} bad grasps".format(len(ind_good_grasp),
-                                                             len(in_ind_points) - len(ind_good_grasp)))
-        if len(ind_good_grasp) != 0:
-            real_good_grasp = [real_grasp[i] for i in ind_good_grasp]
-            real_score_value = [score_value[i] for i in ind_good_grasp]
+            rospy.loginfo("robot is not at home, stop calculating the grasp score")
+            break
+        if in_ind_points[ii].shape[0] < minimal_points_send_to_point_net:
+            rospy.loginfo("Mark as bad grasp! Only {} points, should be at least {} points.".format(
+                          in_ind_points[ii].shape[0], minimal_points_send_to_point_net))
+            score.append(0)
+            score_value.append(0.0)
             if show_bad_grasp:
-                real_bad_grasp = [real_grasp[i] for i in ind_bad_grasp]
+                ind_bad_grasp.append(ii)
+        else:
+            predict = []
+            grasp_score = []
+            for _ in range(repeat):
+                if len(in_ind_points[ii]) >= input_points_num:
+                    points_modify = in_ind_points[ii][np.random.choice(len(in_ind_points[ii]),
+                                                                       input_points_num, replace=False)]
+                else:
+                    points_modify = in_ind_points[ii][np.random.choice(len(in_ind_points[ii]),
+                                                                       input_points_num, replace=True)]
+            
+            # ========= comment out the evaluation part
+                # if_good_grasp, grasp_score_tmp = test_network(model.eval(), points_modify)
+                #predict.append(if_good_grasp.item())
+                #grasp_score.append(grasp_score_tmp)
 
-        ########################################################################################
-        ## end of grasp detection
-        ########################################################################################
+                # predict.append(True)
+                # grasp_score.append(1.)
+
+            # predict_vote = mode(predict)[0][0]  # vote from all the "repeat" results.
+            # grasp_score = np.array(grasp_score)
+            # if args.model_type == "3class":  # the best in 3 class classification is the last column, third column
+            #     which_one_is_best = 2  # should set as 2
+            # else:  # for two class classification best is the second column (also the last column)
+            #     which_one_is_best = 1  # should set as 1
+            # score_vote = np.mean(grasp_score[np.where(predict == predict_vote)][:, 0, which_one_is_best])
+            # score.append(predict_vote)
+            # score_value.append(score_vote)
+
+            # if score[ii] == which_one_is_best:
+            #     ind_good_grasp.append(ii)
+            # else:
+            #     if show_bad_grasp:
+            #         ind_bad_grasp.append(ii)
+
+            # ========= Set all the grasp as good grasp
+            ind_good_grasp.append(ii)
+            score_value.append(1.0)
+            # ========= Set all the grasp as good grasp
+
+
+            
+    print("Got {} good grasps, and {} bad grasps".format(len(ind_good_grasp),
+                                                         len(in_ind_points) - len(ind_good_grasp)))
+    if len(ind_good_grasp) != 0:
+        real_good_grasp = [real_grasp[i] for i in ind_good_grasp]
+        real_score_value = [score_value[i] for i in ind_good_grasp]
+        if show_bad_grasp:
+            real_bad_grasp = [real_grasp[i] for i in ind_bad_grasp]
+
+    ########################################################################################
+    ## end of grasp detection
+    ########################################################################################
+
+    marker_array = MarkerArray()
+    marker_array_single = MarkerArray()
+    grasp_msg_list = GraspConfigList()
+
+    for i in range(len(real_good_grasp)):
+        grasp_msg = get_grasp_msg(real_good_grasp[i], real_score_value[i])
+        grasp_msg_list.grasps.append(grasp_msg)
+    for i in range(len(real_good_grasp)):
+        show_grasp_marker(marker_array, real_good_grasp[i], gripper, (0, 1, 0), marker_life_time)
+
+    if show_bad_grasp:
+        for i in range(len(real_bad_grasp)):
+            show_grasp_marker(marker_array, real_bad_grasp[i], gripper, (1, 0, 0), marker_life_time)
+
+    id_ = 0
+    for m in marker_array.markers:
+        m.id = id_
+        id_ += 1
+
+    grasp_msg_list.header.stamp = rospy.Time.now()
+    grasp_msg_list.header.frame_id = "table_top"
+
+    while(True):
+        if len(real_good_grasp) != 0:
+            i = 0
+            single_grasp_list_pub = GraspConfigList()
+            single_grasp_list_pub.header.stamp = rospy.Time.now()
+            single_grasp_list_pub.header.frame_id = "table_top"
+            grasp_msg = get_grasp_msg(real_good_grasp[i], real_score_value[i])
+            single_grasp_list_pub.grasps.append(grasp_msg)
+            show_grasp_marker(marker_array_single, real_good_grasp[i], gripper, (1, 0, 0), marker_life_time+20)
+
+            for m in marker_array_single.markers:
+                m.id = id_
+                id_ += 1
+            pub1.publish(marker_array)
+            rospy.sleep(4)
+            pub2.publish(single_grasp_list_pub)
+            pub1.publish(marker_array_single)
+            pub3.publish(obj_pc)
+        # pub2.publish(grasp_msg_list)
+        rospy.loginfo(" Publishing grasp pose to rviz using marker array and good grasp pose")
+        rate.sleep()
 
       
