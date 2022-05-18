@@ -108,21 +108,6 @@ def remove_table_points(points_voxel_, vis=False):
     print("Success delete [[ {} ]] points from the table!".format(len(points_voxel_) - len(new_points_voxel_)))
     return new_points_voxel_
 
-
-def remove_white_pixel(msg, points_, vis=False):
-    points_with_c_ = pointclouds.pointcloud2_to_array(msg)
-    points_with_c_ = pointclouds.split_rgb_field(points_with_c_)
-    r = np.asarray(points_with_c_['r'], dtype=np.uint32)
-    g = np.asarray(points_with_c_['g'], dtype=np.uint32)
-    b = np.asarray(points_with_c_['b'], dtype=np.uint32)
-    rgb_colors = np.vstack([r, g, b]).T
-    # rgb = rgb_colors.astype(np.float) / 255
-    ind_good_points_ = np.sum(rgb_colors[:] < 210, axis=-1) == 3
-    ind_good_points_ = np.where(ind_good_points_ == 1)[0]
-    new_points_ = points_[ind_good_points_]
-    return new_points_
-
-
 def get_voxel_fun(points_, n):
     get_voxel = voxelgrid.VoxelGrid(points_, n_x=n, n_y=n, n_z=n)
     get_voxel.compute()
@@ -557,34 +542,9 @@ if __name__ == '__main__':
                     points_modify = in_ind_points[ii][np.random.choice(len(in_ind_points[ii]),
                                                                        input_points_num, replace=True)]
             
-            # ========= comment out the evaluation part
-                # if_good_grasp, grasp_score_tmp = test_network(model.eval(), points_modify)
-                #predict.append(if_good_grasp.item())
-                #grasp_score.append(grasp_score_tmp)
-
-                # predict.append(True)
-                # grasp_score.append(1.)
-
-            # predict_vote = mode(predict)[0][0]  # vote from all the "repeat" results.
-            # grasp_score = np.array(grasp_score)
-            # if args.model_type == "3class":  # the best in 3 class classification is the last column, third column
-            #     which_one_is_best = 2  # should set as 2
-            # else:  # for two class classification best is the second column (also the last column)
-            #     which_one_is_best = 1  # should set as 1
-            # score_vote = np.mean(grasp_score[np.where(predict == predict_vote)][:, 0, which_one_is_best])
-            # score.append(predict_vote)
-            # score_value.append(score_vote)
-
-            # if score[ii] == which_one_is_best:
-            #     ind_good_grasp.append(ii)
-            # else:
-            #     if show_bad_grasp:
-            #         ind_bad_grasp.append(ii)
-
-            # ========= Set all the grasp as good grasp
+            # Set all the grasps as good grasp
             ind_good_grasp.append(ii)
             score_value.append(1.0)
-            # ========= Set all the grasp as good grasp
 
 
             
@@ -599,6 +559,9 @@ if __name__ == '__main__':
     ########################################################################################
     ## end of grasp detection
     ########################################################################################
+
+
+    #### Publish to the rviz for the visualization
 
     marker_array = MarkerArray()
     marker_array_single = MarkerArray()
