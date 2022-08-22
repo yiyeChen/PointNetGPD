@@ -12,41 +12,23 @@ import sys
 from os import path
 
 sys.path.append(path.dirname(path.dirname(path.abspath("__file__"))))
-parser = argparse.ArgumentParser(description="pointnetGPD")
-parser.add_argument("--cuda", action="store_true", default=False)
-parser.add_argument("--gpu", type=int, default=0)
-parser.add_argument("--load-model", type=str,
-                    default="../data/pointnetgpd_3class.model")
-parser.add_argument("--show_final_grasp", action="store_true", default=False)
-parser.add_argument("--tray_grasp", action="store_true", default=False)
-parser.add_argument("--using_mp", action="store_true", default=False)
-parser.add_argument("--model_type", type=str, default="3class")
 
-args = parser.parse_args()
+########### Yiye: Setting
+load_model = path.join(
+    path.dirname(path.dirname(path.abspath(__file__))),
+    "data/pointnetgpd_3class.model"
+)
+cuda = True
+gpu = 0
 
-args.cuda = args.cuda if torch.cuda.is_available else False
+model = torch.load(load_model, map_location="cpu")
+model.device_ids = [gpu]
+print("load model {}".format(load_model))
 
-if args.cuda:
-    torch.cuda.manual_seed(1)
-
-np.random.seed(int(time.time()))
-
-if args.model_type == "100":
-    args.load_model = "../data/pointgpd_chann3_local.model"
-elif args.model_type == "50":
-    args.load_model = "../data/pointgpd_50_points.model"
-elif args.model_type == "3class":  # input points number is 500
-    args.load_model = "data/pointnetgpd_3class.model"
-else:
-    print("Using default model file")
-model = torch.load(args.load_model, map_location="cpu")
-model.device_ids = [args.gpu]
-print("load model {}".format(args.load_model))
-
-if args.cuda:
-    model = torch.load(args.load_model, map_location="cuda:{}".format(args.gpu))
-    if args.gpu != -1:
-        torch.cuda.set_device(args.gpu)
+if cuda:
+    model = torch.load(load_model, map_location="cuda:{}".format(gpu))
+    if gpu != -1:
+        torch.cuda.set_device(gpu)
         model = model.cuda()
     else:
         device_id = [0, 1]
@@ -60,11 +42,11 @@ def test_network(model_, local_pc):
     local_pc = local_pc.T
     local_pc = local_pc[np.newaxis, ...]
     local_pc = torch.FloatTensor(local_pc)
-    if args.cuda:
+    if cuda:
         local_pc = local_pc.cuda()
     output, _ = model_(local_pc)  # N*C
     output = output.softmax(1)
-    pred = output.data.max(1, keepdim=True)[1]
+    pred = output.data.max(1, keepdim=True)[1].cpu()
     output = output.cpu()
     return pred[0], output.data.numpy()
 
